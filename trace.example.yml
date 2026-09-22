@@ -1,0 +1,8 @@
+# Java Method Trace YAML 設定範例
+project: "D:/workspace/insurance"
+class: "PolicyService"
+method: "updatePolicy(PolicyRequest)"
+depth: 5
+direction: "down"
+encoding: "UTF-8"
+output: "trace.md"

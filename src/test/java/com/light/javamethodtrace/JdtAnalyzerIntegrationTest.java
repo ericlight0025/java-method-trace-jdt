@@ -8,6 +8,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
+import java.util.Map;
 
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.io.TempDir;
@@ -109,6 +110,46 @@ class JdtAnalyzerIntegrationTest {
         List<MethodNode> stringMethod = index.findCandidates("OverloadService", "update(String)");
         assertEquals(1, stringMethod.size());
         assertEquals("update(String)", stringMethod.get(0).getMethodSignature());
+    }
+
+    /**
+     * 驗證 CLI 可讀取 YAML，且命令列參數會覆蓋 YAML 同名設定。
+     *
+     * @throws IOException 建立測試專案或讀取輸出失敗時拋出
+     */
+    @Test
+    void shouldLoadYamlAndLetCommandLineOverrideValues() throws IOException {
+        Path projectPath = temporaryDirectory.resolve("yaml-project");
+        Path sourceFile = projectPath.resolve("source/com/demo/AService.java");
+        writeJava(sourceFile,
+                "package com.demo;\n"
+                        + "public class AService {\n"
+                        + "    public void execute() { }\n"
+                        + "}\n");
+
+        Path configPath = temporaryDirectory.resolve("trace.yml");
+        Path outputPath = temporaryDirectory.resolve("yaml-trace.md");
+        String config = "project: \"" + projectPath.toString().replace('\\', '/') + "\"\n"
+                + "class: \"AService\"\n"
+                + "method: \"execute\"\n"
+                + "depth: 0\n"
+                + "direction: \"up\"\n"
+                + "output: \"" + outputPath.toString().replace('\\', '/') + "\"\n";
+        Files.writeString(configPath, config, StandardCharsets.UTF_8);
+
+        Map<String, String> values = YamlConfigLoader.load(configPath);
+        assertEquals("0", values.get("depth"));
+        assertEquals("up", values.get("direction"));
+
+        int exitCode = Main.run(new String[]{
+                "--config", configPath.toString(),
+                "--depth", "1",
+                "--direction", "down"});
+
+        assertEquals(0, exitCode);
+        String markdown = Files.readString(outputPath, StandardCharsets.UTF_8);
+        assertTrue(markdown.contains("Max Depth: `1`"));
+        assertTrue(markdown.contains("Direction: `down`"));
     }
 
     /**
