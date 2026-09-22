@@ -5,8 +5,8 @@ import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
 
-import org.eclipse.jdt.core.dom.ITypeBinding;
 import org.eclipse.jdt.core.dom.IMethodBinding;
 
 /**
@@ -46,7 +46,7 @@ public final class JavaSourceIndex {
                 .filter(method -> !query.hasParameterList()
                         || parameterTypesMatch(method, query.parameterTypes()))
                 .sorted(Comparator.comparing(MethodNode::getMethodSignature))
-                .toList();
+                .collect(Collectors.toList());
         return result;
     }
 
@@ -172,10 +172,27 @@ public final class JavaSourceIndex {
      * @param parameterTypes 參數型別
      * @param hasParameterList 是否有指定參數清單
      */
-    private record MethodQuery(
-            String methodName,
-            List<String> parameterTypes,
-            boolean hasParameterList) {
+    private static final class MethodQuery {
+
+        private final String methodName;
+        private final List<String> parameterTypes;
+        private final boolean hasParameterList;
+
+        /**
+         * 建立 Method 查詢條件。
+         *
+         * @param methodName Method 名稱
+         * @param parameterTypes 參數型別
+         * @param hasParameterList 是否有指定參數清單
+         */
+        private MethodQuery(
+                String methodName,
+                List<String> parameterTypes,
+                boolean hasParameterList) {
+            this.methodName = methodName;
+            this.parameterTypes = parameterTypes;
+            this.hasParameterList = hasParameterList;
+        }
 
         /**
          * 解析 Method 名稱或完整 Signature。
@@ -234,10 +251,37 @@ public final class JavaSourceIndex {
                 }
             }
 
-            if (!current.isEmpty()) {
+            if (current.length() > 0) {
                 result.add(current.toString().trim());
             }
             return result;
+        }
+
+        /**
+         * 取得 Method 名稱。
+         *
+         * @return Method 名稱
+         */
+        private String methodName() {
+            return methodName;
+        }
+
+        /**
+         * 取得參數型別清單。
+         *
+         * @return 參數型別清單
+         */
+        private List<String> parameterTypes() {
+            return parameterTypes;
+        }
+
+        /**
+         * 判斷是否有指定參數清單。
+         *
+         * @return true 代表有指定參數清單
+         */
+        private boolean hasParameterList() {
+            return hasParameterList;
         }
     }
 }

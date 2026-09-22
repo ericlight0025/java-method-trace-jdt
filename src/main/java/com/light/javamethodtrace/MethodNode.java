@@ -4,6 +4,7 @@ import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.stream.Collectors;
 
 import org.eclipse.jdt.core.dom.AbstractTypeDeclaration;
 import org.eclipse.jdt.core.dom.CompilationUnit;
@@ -173,6 +174,15 @@ public final class MethodNode {
      */
     public String getMethodSignature() {
         return methodSignature;
+    }
+
+    /**
+     * 取得參數使用完整型別名稱的 Method Signature。
+     *
+     * @return 完整型別 Method Signature
+     */
+    public String getQualifiedMethodSignature() {
+        return methodName + "(" + String.join(", ", parameterTypes) + ")";
     }
 
     /**
@@ -365,7 +375,7 @@ public final class MethodNode {
     private static String buildMethodSignature(String methodName, List<String> parameterTypes) {
         List<String> displayTypes = parameterTypes.stream()
                 .map(MethodNode::simpleTypeName)
-                .toList();
+                .collect(Collectors.toList());
         return methodName + "(" + String.join(", ", displayTypes) + ")";
     }
 
@@ -465,7 +475,8 @@ public final class MethodNode {
     private static String findEnclosingClassName(MethodDeclaration declaration) {
         var current = declaration.getParent();
         while (current != null) {
-            if (current instanceof AbstractTypeDeclaration typeDeclaration) {
+            if (current instanceof AbstractTypeDeclaration) {
+                AbstractTypeDeclaration typeDeclaration = (AbstractTypeDeclaration) current;
                 return typeDeclaration.getName().getIdentifier();
             }
             current = current.getParent();

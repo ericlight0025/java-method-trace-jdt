@@ -1,11 +1,17 @@
 # Java Method Trace
 
-這是一個使用 Eclipse JDT Core 的 Java 17 CLI 工具。工具會遞迴掃描指定專案的 `.java` 檔案，透過 JDT Binding 找出專案內 Java Method 的呼叫關係，最後輸出 Markdown 報告。
+這是一個使用 Eclipse JDT Core 的 Java 11 CLI 工具。工具會遞迴掃描指定專案的 `.java` 檔案，透過 JDT Binding 找出專案內 Java Method 的呼叫關係，最後輸出 Markdown 報告。
 
 ## 建置
 
 ```bash
 mvn clean package
+```
+
+執行測試：
+
+```bash
+mvn test
 ```
 
 建置完成後會產生：
@@ -22,6 +28,7 @@ target/java-method-trace.jar
 --method   Method 名稱，或完整 Signature
 --depth    最大追蹤深度，Root 為第 0 層
 --output   輸出 Markdown 檔案，可省略
+--encoding Java 原始檔編碼，可省略，預設 UTF-8，例如 MS950 或 Big5
 ```
 
 未指定 `--output` 時，會在目前執行目錄產生 `trace.md`。
@@ -42,6 +49,7 @@ java -jar target/java-method-trace.jar \
   --class "AService" \
   --method "execute" \
   --depth 5 \
+  --encoding "UTF-8" \
   --output "demo-trace.md"
 ```
 
@@ -74,3 +82,7 @@ java -jar target/java-method-trace.jar \
 - Field Data Flow、Variable Trace、Call Graph UI、HTML、Graphviz、Mermaid
 
 JDK、Spring、Apache Commons、Jackson 等外部 Method 不會往下展開；第一版只追蹤目前專案 Index 中存在 Source Code 的 Method。
+
+## Source Folder 與編碼
+
+工具會依每個 Java 檔的 `package` 宣告推算 Source Root，因此可支援 Maven、Gradle、Eclipse `src` 與自訂 Source Folder。若舊專案不是 UTF-8，請指定 `--encoding "MS950"` 或實際使用的 Charset。

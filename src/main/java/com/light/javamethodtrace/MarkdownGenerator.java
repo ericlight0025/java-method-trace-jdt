@@ -152,9 +152,30 @@ public final class MarkdownGenerator {
                 .append(" - ")
                 .append(method.getEndLine())
                 .append("`\n\n");
-        markdown.append("```java\n")
+        String codeFence = resolveCodeFence(method.getSourceCode());
+        markdown.append(codeFence).append("java\n")
                 .append(method.getSourceCode())
-                .append("\n```\n\n");
+                .append('\n').append(codeFence).append("\n\n");
+    }
+
+    /**
+     * 取得不會被 Method 原始碼中的反引號提前結束的 Markdown 程式碼圍欄。
+     *
+     * @param sourceCode Method 原始碼
+     * @return 可安全使用的程式碼圍欄
+     */
+    private static String resolveCodeFence(String sourceCode) {
+        int longestRun = 0;
+        int currentRun = 0;
+        for (int index = 0; index < sourceCode.length(); index++) {
+            if (sourceCode.charAt(index) == '`') {
+                currentRun++;
+                longestRun = Math.max(longestRun, currentRun);
+            } else {
+                currentRun = 0;
+            }
+        }
+        return "`".repeat(Math.max(3, longestRun + 1));
     }
 
     /**

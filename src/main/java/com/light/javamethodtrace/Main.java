@@ -1,6 +1,7 @@
 package com.light.javamethodtrace;
 
 import java.io.IOException;
+import java.nio.charset.Charset;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.List;
@@ -55,10 +56,13 @@ public final class Main {
         try {
             System.out.println("Scanning Java files...");
 
-            JdtAnalyzer analyzer = new JdtAnalyzer(arguments.projectPath());
+            JdtAnalyzer analyzer = new JdtAnalyzer(
+                    arguments.projectPath(),
+                    arguments.sourceCharset());
             JavaSourceIndex index = analyzer.buildIndex();
 
             System.out.println("Found " + analyzer.getScannedFileCount() + " Java files.");
+            System.out.println("Source Encoding: " + arguments.sourceCharset().name());
             System.out.println("Finding root method...");
 
             List<MethodNode> candidates = index.findCandidates(
@@ -77,7 +81,7 @@ public final class Main {
                     MethodNode candidate = candidates.get(indexNumber);
                     System.err.println((indexNumber + 1) + ". "
                             + candidate.getFullyQualifiedClassName() + "."
-                            + candidate.getMethodSignature());
+                            + candidate.getQualifiedMethodSignature());
                 }
                 System.err.println("請改用完整 Method Signature，例如："
                         + "--method \"updatePolicy(PolicyRequest)\"");
@@ -139,6 +143,7 @@ public final class Main {
                 + " --class <class-name>"
                 + " --method <method-name-or-signature>"
                 + " --depth <number>"
+                + " [--encoding <charset>]"
                 + " [--output <file>]");
         System.out.println();
         System.out.println("Examples:");
@@ -147,28 +152,53 @@ public final class Main {
                 + " --class \"PolicyService\""
                 + " --method \"updatePolicy(PolicyRequest)\""
                 + " --depth 5"
+                + " --encoding \"MS950\""
                 + " --output \"trace.md\"");
         System.out.println();
         System.out.println("未指定 --output 時，預設輸出到目前執行目錄的 trace.md。");
+        System.out.println("未指定 --encoding 時，預設使用 UTF-8。");
     }
 
     /**
      * 已解析的命令列參數。
-     *
-     * @param projectPath Java 專案路徑
-     * @param className Class 名稱
-     * @param methodSpec Method 名稱或完整 Method Signature
-     * @param maxDepth 最大追蹤深度
-     * @param outputPath 輸出檔案
-     * @param help 是否顯示說明
      */
-    private record Arguments(
-            Path projectPath,
-            String className,
-            String methodSpec,
-            int maxDepth,
-            Path outputPath,
-            boolean help) {
+    private static final class Arguments {
+
+        private final Path projectPath;
+        private final String className;
+        private final String methodSpec;
+        private final int maxDepth;
+        private final Path outputPath;
+        private final Charset sourceCharset;
+        private final boolean help;
+
+        /**
+         * 建立已解析的命令列參數。
+         *
+         * @param projectPath Java 專案路徑
+         * @param className Class 名稱
+         * @param methodSpec Method 名稱或完整 Method Signature
+         * @param maxDepth 最大追蹤深度
+         * @param outputPath 輸出檔案
+         * @param sourceCharset Java 原始檔編碼
+         * @param help 是否顯示說明
+         */
+        private Arguments(
+                Path projectPath,
+                String className,
+                String methodSpec,
+                int maxDepth,
+                Path outputPath,
+                Charset sourceCharset,
+                boolean help) {
+            this.projectPath = projectPath;
+            this.className = className;
+            this.methodSpec = methodSpec;
+            this.maxDepth = maxDepth;
+            this.outputPath = outputPath;
+            this.sourceCharset = sourceCharset;
+            this.help = help;
+        }
 
         /**
          * 解析命令列參數。
@@ -186,11 +216,12 @@ public final class Main {
             String method = null;
             String depth = null;
             String output = null;
+            String encoding = "UTF-8";
 
             for (int index = 0; index < args.length; index++) {
                 String argument = args[index];
                 if ("--help".equals(argument) || "-h".equals(argument)) {
-                    return new Arguments(null, null, null, 0, null, true);
+                    return new Arguments(null, null, null, 0, null, null, true);
                 }
 
                 if (!argument.startsWith("--")) {
@@ -216,12 +247,26 @@ public final class Main {
                 }
 
                 switch (optionName) {
-                    case "project" -> project = optionValue;
-                    case "class" -> className = optionValue;
-                    case "method" -> method = optionValue;
-                    case "depth" -> depth = optionValue;
-                    case "output" -> output = optionValue;
-                    default -> throw new IllegalArgumentException("不支援的參數：--" + optionName);
+                    case "project":
+                        project = optionValue;
+                        break;
+                    case "class":
+                        className = optionValue;
+                        break;
+                    case "method":
+                        method = optionValue;
+                        break;
+                    case "depth":
+                        depth = optionValue;
+                        break;
+                    case "output":
+                        output = optionValue;
+                        break;
+                    case "encoding":
+                        encoding = optionValue;
+                        break;
+                    default:
+                        throw new IllegalArgumentException("不支援的參數：--" + optionName);
                 }
             }
 
@@ -240,6 +285,13 @@ public final class Main {
                 throw new IllegalArgumentException("--depth 必須是非負整數：" + depth);
             }
 
+            Charset sourceCharset;
+            try {
+                sourceCharset = Charset.forName(encoding.trim());
+            } catch (IllegalArgumentException exception) {
+                throw new IllegalArgumentException("不支援的 --encoding：" + encoding);
+            }
+
             Path projectPath = Path.of(project).toAbsolutePath().normalize();
             Path outputPath = output == null
                     ? Path.of("trace.md").toAbsolutePath().normalize()
@@ -251,7 +303,71 @@ public final class Main {
                     method.trim(),
                     maxDepth,
                     outputPath,
+                    sourceCharset,
                     false);
+        }
+
+        /**
+         * 取得 Java 專案路徑。
+         *
+         * @return Java 專案路徑
+         */
+        private Path projectPath() {
+            return projectPath;
+        }
+
+        /**
+         * 取得 Class 名稱。
+         *
+         * @return Class 名稱
+         */
+        private String className() {
+            return className;
+        }
+
+        /**
+         * 取得 Method 查詢條件。
+         *
+         * @return Method 名稱或 Signature
+         */
+        private String methodSpec() {
+            return methodSpec;
+        }
+
+        /**
+         * 取得最大追蹤深度。
+         *
+         * @return 最大追蹤深度
+         */
+        private int maxDepth() {
+            return maxDepth;
+        }
+
+        /**
+         * 取得輸出檔案。
+         *
+         * @return 輸出檔案
+         */
+        private Path outputPath() {
+            return outputPath;
+        }
+
+        /**
+         * 取得 Java 原始檔編碼。
+         *
+         * @return Java 原始檔編碼
+         */
+        private Charset sourceCharset() {
+            return sourceCharset;
+        }
+
+        /**
+         * 判斷是否顯示說明。
+         *
+         * @return true 代表顯示說明
+         */
+        private boolean help() {
+            return help;
         }
     }
 }

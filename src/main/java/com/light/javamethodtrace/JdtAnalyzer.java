@@ -2,14 +2,17 @@ package com.light.javamethodtrace;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
@@ -37,18 +40,31 @@ public final class JdtAnalyzer {
             ".idea");
 
     private final Path projectPath;
+    private final Charset sourceCharset;
     private int scannedFileCount;
     private JavaSourceIndex sourceIndex;
+    private Map<Path, Path> sourceRootByFile = new HashMap<Path, Path>();
     private List<Path> sourceRoots = List.of();
     private List<String> classpathEntries = List.of();
+
+    /**
+     * 建立預設 UTF-8 的 JDT 分析器。
+     *
+     * @param projectPath Java 專案根目錄
+     */
+    public JdtAnalyzer(Path projectPath) {
+        this(projectPath, StandardCharsets.UTF_8);
+    }
 
     /**
      * 建立 JDT 分析器。
      *
      * @param projectPath Java 專案根目錄
+     * @param sourceCharset Java 原始檔編碼
      */
-    public JdtAnalyzer(Path projectPath) {
+    public JdtAnalyzer(Path projectPath, Charset sourceCharset) {
         this.projectPath = projectPath.toAbsolutePath().normalize();
+        this.sourceCharset = sourceCharset;
     }
 
     /**
@@ -60,18 +76,24 @@ public final class JdtAnalyzer {
     public JavaSourceIndex buildIndex() throws IOException {
         List<Path> javaFiles = scanJavaFiles();
         scannedFileCount = javaFiles.size();
-        sourceRoots = detectSourceRoots(javaFiles);
+        Map<Path, String> sourceByFile = readSources(javaFiles);
+        sourceRootByFile = detectSourceRoots(javaFiles, sourceByFile);
+        sourceRoots = sourceRootByFile.values().stream()
+                .distinct()
+                .sorted(Comparator.comparing(Path::toString))
+                .collect(Collectors.toList());
         classpathEntries = detectClasspathEntries();
         sourceIndex = new JavaSourceIndex();
 
         for (Path javaFile : javaFiles) {
-            String source = Files.readString(javaFile, StandardCharsets.UTF_8);
+            String source = sourceByFile.get(javaFile);
             CompilationUnit compilationUnit;
             try {
                 compilationUnit = parse(javaFile, source);
             } catch (RuntimeException exception) {
                 System.err.println("Warning: JDT 無法解析檔案，已略過："
-                        + projectPath.relativize(javaFile));
+                        + projectPath.relativize(javaFile)
+                        + "，原因：" + exception.getMessage());
                 continue;
             }
 
@@ -117,7 +139,7 @@ public final class JdtAnalyzer {
             throw new IllegalArgumentException("maxDepth 不可小於 0。");
         }
 
-        Set<String> currentPath = new HashSet<>();
+        Set<String> currentPath = new HashSet<String>();
         currentPath.add(root.getUniqueKey());
         return traceNode(root, 0, maxDepth, currentPath);
     }
@@ -147,7 +169,7 @@ public final class JdtAnalyzer {
             traceNode.addChild(child);
 
             if (!cycle) {
-                Set<String> nextPath = new HashSet<>(currentPath);
+                Set<String> nextPath = new HashSet<String>(currentPath);
                 nextPath.add(calledMethod.getUniqueKey());
                 MethodNode.TraceNode expandedChild = traceNode(
                         calledMethod,
@@ -169,7 +191,7 @@ public final class JdtAnalyzer {
      * @return 專案內被呼叫的 Method，順序與原始碼出現順序相同
      */
     private List<MethodNode> findProjectMethodInvocations(MethodNode method) {
-        List<MethodNode> result = new ArrayList<>();
+        List<MethodNode> result = new ArrayList<MethodNode>();
         method.getDeclaration().accept(new ASTVisitor() {
             @Override
             public boolean visit(MethodDeclaration declaration) {
@@ -213,6 +235,25 @@ public final class JdtAnalyzer {
     }
 
     /**
+     * 讀取所有 Java 原始碼，後續 Source Root 與 AST 都使用同一份內容。
+     *
+     * @param javaFiles Java 檔案清單
+     * @return 檔案與原始碼對照表
+     * @throws IOException 讀檔失敗時拋出
+     */
+    private Map<Path, String> readSources(List<Path> javaFiles) throws IOException {
+        Map<Path, String> result = new HashMap<Path, String>();
+        for (Path javaFile : javaFiles) {
+            String source = Files.readString(javaFile, sourceCharset);
+            if (!source.isEmpty() && source.charAt(0) == '\uFEFF') {
+                source = source.substring(1);
+            }
+            result.put(javaFile, source);
+        }
+        return result;
+    }
+
+    /**
      * 判斷是否為 Java 檔案。
      *
      * @param path 檔案路徑
@@ -239,36 +280,89 @@ public final class JdtAnalyzer {
     }
 
     /**
-     * 偵測常見 Maven、Gradle 與一般 Java 專案的 Source Root。
+     * 依 Java 檔 package 宣告推算個別檔案的 Source Root。
      *
      * @param javaFiles Java 檔案
-     * @return Source Root 清單
+     * @param sourceByFile 檔案與原始碼對照表
+     * @return 檔案與 Source Root 對照表
      */
-    private List<Path> detectSourceRoots(List<Path> javaFiles) {
-        Set<Path> roots = new LinkedHashSet<>();
+    private Map<Path, Path> detectSourceRoots(
+            List<Path> javaFiles,
+            Map<Path, String> sourceByFile) {
+        Map<Path, Path> result = new HashMap<Path, Path>();
         for (Path javaFile : javaFiles) {
-            Path relative = projectPath.relativize(javaFile);
-            Path currentRoot = projectPath;
-            boolean foundJavaDirectory = false;
+            result.put(javaFile, inferSourceRoot(javaFile, sourceByFile.get(javaFile)));
+        }
+        return result;
+    }
 
-            for (Path part : relative) {
-                currentRoot = currentRoot.resolve(part);
-                if ("java".equalsIgnoreCase(part.toString())) {
-                    roots.add(currentRoot);
-                    foundJavaDirectory = true;
-                    break;
-                }
-            }
+    /**
+     * 由 package path 倒推 Source Root，支援 Maven、Gradle、Eclipse src 與自訂資料夾。
+     *
+     * @param javaFile Java 檔案
+     * @param source 原始碼
+     * @return Source Root
+     */
+    private Path inferSourceRoot(Path javaFile, String source) {
+        List<String> packageSegments = splitPackageName(readPackageName(source));
+        Path current = javaFile.getParent();
 
-            if (!foundJavaDirectory) {
-                roots.add(projectPath);
+        for (int index = packageSegments.size() - 1; index >= 0; index--) {
+            if (current == null || current.getFileName() == null
+                    || !packageSegments.get(index).equals(current.getFileName().toString())) {
+                return projectPath;
             }
+            current = current.getParent();
         }
 
-        if (roots.isEmpty()) {
-            roots.add(projectPath);
+        if (current == null || !current.startsWith(projectPath)) {
+            return projectPath;
         }
-        return roots.stream().sorted(Comparator.comparing(Path::toString)).toList();
+        return current;
+    }
+
+    /**
+     * 使用 JDT 讀取 package 宣告，不以 Regex 解析 Java 語法。
+     *
+     * @param source 原始碼
+     * @return package 名稱，沒有 package 時回傳空字串
+     */
+    private String readPackageName(String source) {
+        ASTParser parser = ASTParser.newParser(AST.JLS11);
+        parser.setKind(ASTParser.K_COMPILATION_UNIT);
+        parser.setSource(source.toCharArray());
+        CompilationUnit compilationUnit = (CompilationUnit) parser.createAST(null);
+        return compilationUnit.getPackage() == null
+                ? ""
+                : compilationUnit.getPackage().getName().getFullyQualifiedName();
+    }
+
+    /**
+     * 將 package 名稱切成路徑片段。
+     *
+     * @param packageName package 名稱
+     * @return package 片段
+     */
+    private List<String> splitPackageName(String packageName) {
+        List<String> result = new ArrayList<String>();
+        if (packageName == null || packageName.isEmpty()) {
+            return result;
+        }
+
+        StringBuilder current = new StringBuilder();
+        for (int index = 0; index < packageName.length(); index++) {
+            char character = packageName.charAt(index);
+            if (character == '.') {
+                result.add(current.toString());
+                current.setLength(0);
+            } else {
+                current.append(character);
+            }
+        }
+        if (current.length() > 0) {
+            result.add(current.toString());
+        }
+        return result;
     }
 
     /**
@@ -278,7 +372,7 @@ public final class JdtAnalyzer {
      * @throws IOException 掃描失敗時拋出
      */
     private List<String> detectClasspathEntries() throws IOException {
-        Set<String> entries = new LinkedHashSet<>();
+        Set<String> entries = new LinkedHashSet<String>();
         addIfDirectory(entries, projectPath.resolve("target/classes"));
         addIfDirectory(entries, projectPath.resolve("target/test-classes"));
 
@@ -291,7 +385,7 @@ public final class JdtAnalyzer {
                         .forEach(path -> entries.add(path.toAbsolutePath().normalize().toString()));
             }
         }
-        return List.copyOf(entries);
+        return new ArrayList<String>(entries);
     }
 
     /**
@@ -315,19 +409,17 @@ public final class JdtAnalyzer {
      */
     @SuppressWarnings("unchecked")
     private CompilationUnit parse(Path javaFile, String source) {
-        ASTParser parser = ASTParser.newParser(AST.JLS17);
+        ASTParser parser = ASTParser.newParser(AST.JLS11);
         parser.setKind(ASTParser.K_COMPILATION_UNIT);
         parser.setSource(source.toCharArray());
         parser.setResolveBindings(true);
         parser.setBindingsRecovery(true);
         parser.setStatementsRecovery(true);
-
-        MapBuilder compilerOptions = new MapBuilder();
-        parser.setCompilerOptions(compilerOptions.createJava17Options());
+        parser.setCompilerOptions(createJava11Options());
         parser.setEnvironment(
-                classpathEntries.toArray(String[]::new),
+                classpathEntries.toArray(new String[0]),
                 sourceRoots.stream().map(Path::toString).toArray(String[]::new),
-                sourceRoots.stream().map(ignored -> StandardCharsets.UTF_8.name()).toArray(String[]::new),
+                sourceRoots.stream().map(path -> sourceCharset.name()).toArray(String[]::new),
                 true);
         parser.setUnitName(buildUnitName(javaFile));
 
@@ -341,29 +433,25 @@ public final class JdtAnalyzer {
      * @return Unit Name
      */
     private String buildUnitName(Path javaFile) {
-        Path sourceRoot = sourceRoots.stream()
-                .filter(javaFile::startsWith)
-                .max(Comparator.comparing(Path::getNameCount))
-                .orElse(projectPath);
+        Path sourceRoot = sourceRootByFile.get(javaFile);
+        if (sourceRoot == null || !javaFile.startsWith(sourceRoot)) {
+            sourceRoot = projectPath;
+        }
+
         String relativePath = sourceRoot.relativize(javaFile).toString()
                 .replace(File.separatorChar, '/');
         return "/" + relativePath;
     }
 
     /**
-     * 集中處理 JDT Java 17 編譯器選項，避免把設定細節散落在分析流程中。
+     * 建立 Java 11 的 JDT 編譯器選項。
+     *
+     * @return 編譯器選項
      */
-    private static final class MapBuilder {
-
-        /**
-         * 建立 Java 17 編譯器選項。
-         *
-         * @return 編譯器選項
-         */
-        private java.util.Map<String, String> createJava17Options() {
-            java.util.Map<String, String> options = JavaCore.getOptions();
-            JavaCore.setComplianceOptions(JavaCore.VERSION_17, options);
-            return options;
-        }
+    @SuppressWarnings("unchecked")
+    private static Map<String, String> createJava11Options() {
+        Map<String, String> options = JavaCore.getOptions();
+        JavaCore.setComplianceOptions(JavaCore.VERSION_11, options);
+        return options;
     }
 }
