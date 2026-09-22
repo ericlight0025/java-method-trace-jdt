@@ -4,7 +4,9 @@ import java.io.IOException;
 import java.nio.charset.Charset;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 /**
  * Java Method Trace CLI 程式進入點。
@@ -39,6 +41,10 @@ public final class Main {
             arguments = Arguments.parse(args);
         } catch (IllegalArgumentException exception) {
             System.err.println("Error: " + exception.getMessage());
+            printUsage();
+            return 2;
+        } catch (IOException exception) {
+            System.err.println("Error: YAML 設定檔讀取失敗：" + exception.getMessage());
             printUsage();
             return 2;
         }
@@ -149,11 +155,20 @@ public final class Main {
                 + " --class <class-name>"
                 + " --method <method-name-or-signature>"
                 + " --depth <number>"
+                + " [--config <yaml-file>]"
                 + " [--direction <up|down>]"
                 + " [--encoding <charset>]"
                 + " [--output <file>]");
         System.out.println();
         System.out.println("Examples:");
+        System.out.println("  java -jar java-method-trace.jar"
+                + " --config \"trace.yml\"");
+        System.out.println();
+        System.out.println("CLI 參數會覆蓋 YAML 設定，例如：");
+        System.out.println("  java -jar java-method-trace.jar"
+                + " --config \"trace.yml\""
+                + " --depth 10");
+        System.out.println();
         System.out.println("  java -jar java-method-trace.jar"
                 + " --project \"D:\\workspace\\insurance\""
                 + " --class \"PolicyService\""
@@ -219,18 +234,13 @@ public final class Main {
          * @param args 原始命令列參數
          * @return 已解析參數
          */
-        private static Arguments parse(String[] args) {
+        private static Arguments parse(String[] args) throws IOException {
             if (args == null || args.length == 0) {
                 throw new IllegalArgumentException("缺少命令列參數。");
             }
 
-            String project = null;
-            String className = null;
-            String method = null;
-            String depth = null;
-            String output = null;
-            String encoding = "UTF-8";
-            String direction = "down";
+            Map<String, String> commandLineValues = new HashMap<String, String>();
+            Path configPath = null;
 
             for (int index = 0; index < args.length; index++) {
                 String argument = args[index];
@@ -262,33 +272,39 @@ public final class Main {
 
                 switch (optionName) {
                     case "project":
-                        project = optionValue;
-                        break;
                     case "class":
-                        className = optionValue;
-                        break;
                     case "method":
-                        method = optionValue;
-                        break;
                     case "depth":
-                        depth = optionValue;
-                        break;
                     case "direction":
-                        direction = optionValue;
-                        break;
                     case "output":
-                        output = optionValue;
-                        break;
                     case "encoding":
-                        encoding = optionValue;
+                        commandLineValues.put(optionName, optionValue);
+                        break;
+                    case "config":
+                        configPath = Path.of(optionValue).toAbsolutePath().normalize();
                         break;
                     default:
                         throw new IllegalArgumentException("不支援的參數：--" + optionName);
                 }
             }
 
+            Map<String, String> values = new HashMap<String, String>();
+            if (configPath != null) {
+                values.putAll(YamlConfigLoader.load(configPath));
+            }
+            values.putAll(commandLineValues);
+
+            String project = values.get("project");
+            String className = values.get("class");
+            String method = values.get("method");
+            String depth = values.get("depth");
+            String output = values.get("output");
+            String encoding = values.getOrDefault("encoding", "UTF-8");
+            String direction = values.getOrDefault("direction", "down");
+
             if (project == null || className == null || method == null || depth == null) {
-                throw new IllegalArgumentException("必須提供 --project、--class、--method、--depth。");
+                throw new IllegalArgumentException(
+                        "必須提供 --project、--class、--method、--depth，或在 YAML 設定檔中提供。");
             }
 
             int maxDepth;

@@ -30,9 +30,41 @@ target/java-method-trace.jar
 --direction 追蹤方向，可省略；down 為往下找被呼叫 Method，up 為往上找呼叫者
 --output   輸出 Markdown 檔案，可省略
 --encoding Java 原始檔編碼，可省略，預設 UTF-8，例如 MS950 或 Big5
+--config   YAML 設定檔，可省略；CLI 參數會覆蓋 YAML 同名設定
 ```
 
 未指定 `--output` 時，會在目前執行目錄產生 `trace.md`。
+
+## YAML 設定檔
+
+可複製根目錄的 `trace.example.yml`，修改後執行：
+
+```bash
+java -jar target/java-method-trace.jar --config "trace.yml"
+```
+
+YAML 支援以下欄位：
+
+```yaml
+project: "D:/workspace/insurance"
+class: "PolicyService"
+method: "updatePolicy(PolicyRequest)"
+depth: 5
+direction: "down"
+encoding: "UTF-8"
+output: "trace.md"
+```
+
+也可以用 CLI 覆蓋 YAML 設定，例如：
+
+```bash
+java -jar target/java-method-trace.jar \
+  --config "trace.yml" \
+  --direction "up" \
+  --depth 10
+```
+
+相對路徑會以目前執行 CLI 的目錄為基準。YAML 設定檔使用 UTF-8；Windows 路徑建議使用 `/`，避免反斜線跳脫問題。
 
 ## Demo
 

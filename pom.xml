@@ -15,6 +15,7 @@
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
         <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
         <jdt.version>3.33.0</jdt.version>
+        <snakeyaml.version>2.2</snakeyaml.version>
         <junit.jupiter.version>5.10.2</junit.jupiter.version>
     </properties>
 
@@ -23,6 +24,11 @@
             <groupId>org.eclipse.jdt</groupId>
             <artifactId>org.eclipse.jdt.core</artifactId>
             <version>${jdt.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>org.yaml</groupId>
+            <artifactId>snakeyaml</artifactId>
+            <version>${snakeyaml.version}</version>
         </dependency>
         <dependency>
             <groupId>org.junit.jupiter</groupId>
