@@ -43,6 +43,7 @@ public final class JdtAnalyzer {
     private final Charset sourceCharset;
     private int scannedFileCount;
     private JavaSourceIndex sourceIndex;
+    private Map<String, List<MethodNode>> callersByCalleeKey = new HashMap<String, List<MethodNode>>();
     private Map<Path, Path> sourceRootByFile = new HashMap<Path, Path>();
     private List<Path> sourceRoots = List.of();
     private List<String> classpathEntries = List.of();
@@ -112,6 +113,8 @@ public final class JdtAnalyzer {
             });
         }
 
+        buildCallerIndex();
+
         return sourceIndex;
     }
 
@@ -132,16 +135,34 @@ public final class JdtAnalyzer {
      * @return 呼叫追蹤樹
      */
     public MethodNode.TraceNode trace(MethodNode root, int maxDepth) {
+        return trace(root, maxDepth, TraceDirection.DOWN);
+    }
+
+    /**
+     * 從指定 Root Method 開始依方向追蹤專案內呼叫關係。
+     *
+     * @param root 根 Method
+     * @param maxDepth 最大深度，Root 為 0
+     * @param direction 追蹤方向
+     * @return 呼叫追蹤樹
+     */
+    public MethodNode.TraceNode trace(
+            MethodNode root,
+            int maxDepth,
+            TraceDirection direction) {
         if (sourceIndex == null) {
             throw new IllegalStateException("請先呼叫 buildIndex()。");
         }
         if (maxDepth < 0) {
             throw new IllegalArgumentException("maxDepth 不可小於 0。");
         }
+        if (direction == null) {
+            throw new IllegalArgumentException("追蹤方向不可為空。");
+        }
 
         Set<String> currentPath = new HashSet<String>();
         currentPath.add(root.getUniqueKey());
-        return traceNode(root, 0, maxDepth, currentPath);
+        return traceNode(root, 0, maxDepth, currentPath, direction);
     }
 
     /**
@@ -157,25 +178,27 @@ public final class JdtAnalyzer {
             MethodNode method,
             int depth,
             int maxDepth,
-            Set<String> currentPath) {
+            Set<String> currentPath,
+            TraceDirection direction) {
         MethodNode.TraceNode traceNode = new MethodNode.TraceNode(method, false);
         if (depth >= maxDepth) {
             return traceNode;
         }
 
-        for (MethodNode calledMethod : findProjectMethodInvocations(method)) {
-            boolean cycle = currentPath.contains(calledMethod.getUniqueKey());
-            MethodNode.TraceNode child = new MethodNode.TraceNode(calledMethod, cycle);
+        for (MethodNode relatedMethod : findRelatedMethods(method, direction)) {
+            boolean cycle = currentPath.contains(relatedMethod.getUniqueKey());
+            MethodNode.TraceNode child = new MethodNode.TraceNode(relatedMethod, cycle);
             traceNode.addChild(child);
 
             if (!cycle) {
                 Set<String> nextPath = new HashSet<String>(currentPath);
-                nextPath.add(calledMethod.getUniqueKey());
+                nextPath.add(relatedMethod.getUniqueKey());
                 MethodNode.TraceNode expandedChild = traceNode(
-                        calledMethod,
+                        relatedMethod,
                         depth + 1,
                         maxDepth,
-                        nextPath);
+                        nextPath,
+                        direction);
                 for (MethodNode.TraceNode grandChild : expandedChild.getChildren()) {
                     child.addChild(grandChild);
                 }
@@ -215,6 +238,45 @@ public final class JdtAnalyzer {
             }
         });
         return result;
+    }
+
+    /**
+     * 依追蹤方向取得下一層相關 Method。
+     *
+     * @param method 目前 Method
+     * @param direction 追蹤方向
+     * @return 下一層 Method
+     */
+    private List<MethodNode> findRelatedMethods(MethodNode method, TraceDirection direction) {
+        if (direction == TraceDirection.DOWN) {
+            return findProjectMethodInvocations(method);
+        }
+        List<MethodNode> callers = callersByCalleeKey.get(method.getUniqueKey());
+        return callers == null ? List.of() : callers;
+    }
+
+    /**
+     * 建立被呼叫 Method 到呼叫端 Method 的反向索引，供向上追蹤使用。
+     */
+    private void buildCallerIndex() {
+        callersByCalleeKey = new HashMap<String, List<MethodNode>>();
+        for (MethodNode caller : sourceIndex.getMethods()) {
+            for (MethodNode callee : findProjectMethodInvocations(caller)) {
+                List<MethodNode> callers = callersByCalleeKey.computeIfAbsent(
+                        callee.getUniqueKey(),
+                        ignored -> new ArrayList<MethodNode>());
+                if (!callers.contains(caller)) {
+                    callers.add(caller);
+                }
+            }
+        }
+
+        Comparator<MethodNode> callerOrder = Comparator
+                .comparing((MethodNode method) -> method.getFilePath().toString())
+                .thenComparingInt(MethodNode::getStartLine);
+        for (List<MethodNode> callers : callersByCalleeKey.values()) {
+            callers.sort(callerOrder);
+        }
     }
 
     /**
@@ -453,5 +515,40 @@ public final class JdtAnalyzer {
         Map<String, String> options = JavaCore.getOptions();
         JavaCore.setComplianceOptions(JavaCore.VERSION_11, options);
         return options;
+    }
+
+    /**
+     * Method Call Trace 的方向。
+     */
+    public enum TraceDirection {
+        /** 從目前 Method 往下尋找被呼叫的 Method。 */
+        DOWN,
+        /** 從目前 Method 往上尋找呼叫它的 Method。 */
+        UP;
+
+        /**
+         * 解析 CLI 方向參數。
+         *
+         * @param value CLI 輸入值
+         * @return 追蹤方向
+         */
+        public static TraceDirection fromCliValue(String value) {
+            if ("down".equalsIgnoreCase(value)) {
+                return DOWN;
+            }
+            if ("up".equalsIgnoreCase(value)) {
+                return UP;
+            }
+            throw new IllegalArgumentException("--direction 僅支援 up 或 down：" + value);
+        }
+
+        /**
+         * 取得 CLI 顯示名稱。
+         *
+         * @return 小寫方向名稱
+         */
+        public String getCliValue() {
+            return name().toLowerCase(java.util.Locale.ROOT);
+        }
     }
 }

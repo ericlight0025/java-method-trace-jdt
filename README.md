@@ -27,6 +27,7 @@ target/java-method-trace.jar
 --class    Class 名稱，可使用簡單名稱或完整名稱
 --method   Method 名稱，或完整 Signature
 --depth    最大追蹤深度，Root 為第 0 層
+--direction 追蹤方向，可省略；down 為往下找被呼叫 Method，up 為往上找呼叫者
 --output   輸出 Markdown 檔案，可省略
 --encoding Java 原始檔編碼，可省略，預設 UTF-8，例如 MS950 或 Big5
 ```
@@ -49,6 +50,7 @@ java -jar target/java-method-trace.jar \
   --class "AService" \
   --method "execute" \
   --depth 5 \
+  --direction "down" \
   --encoding "UTF-8" \
   --output "demo-trace.md"
 ```
@@ -59,6 +61,26 @@ java -jar target/java-method-trace.jar \
 AService.execute()
 └─ BService.process()
    └─ CService.calculate()
+```
+
+向上追蹤 CService 的呼叫者：
+
+```bash
+java -jar target/java-method-trace.jar \
+  --project "demo-project" \
+  --class "CService" \
+  --method "calculate" \
+  --depth 5 \
+  --direction "up" \
+  --output "demo-up-trace.md"
+```
+
+預期呼叫樹：
+
+```text
+CService.calculate()
+└─ BService.process()
+   └─ AService.execute()
 ```
 
 ## Overload

@@ -1,6 +1,7 @@
 package com.light.javamethodtrace;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.Comparator;
 import java.util.HashMap;
 import java.util.List;
@@ -89,6 +90,15 @@ public final class JavaSourceIndex {
      */
     public int size() {
         return methods.size();
+    }
+
+    /**
+     * 取得所有已建立索引的 Method。
+     *
+     * @return 不可修改的 Method 清單
+     */
+    public List<MethodNode> getMethods() {
+        return Collections.unmodifiableList(methods);
     }
 
     /**

@@ -31,6 +31,25 @@ public final class MarkdownGenerator {
             MethodNode.TraceNode root,
             Path projectPath,
             int maxDepth) throws IOException {
+        write(outputPath, root, projectPath, maxDepth, JdtAnalyzer.TraceDirection.DOWN);
+    }
+
+    /**
+     * 寫出 Markdown 報告。
+     *
+     * @param outputPath 輸出檔案
+     * @param root 追蹤根節點
+     * @param projectPath 專案路徑
+     * @param maxDepth 最大深度
+     * @param direction 追蹤方向
+     * @throws IOException 寫檔失敗時拋出
+     */
+    public static void write(
+            Path outputPath,
+            MethodNode.TraceNode root,
+            Path projectPath,
+            int maxDepth,
+            JdtAnalyzer.TraceDirection direction) throws IOException {
         StringBuilder markdown = new StringBuilder();
         markdown.append("# Java Method Trace\n\n");
         markdown.append("Root: `")
@@ -41,6 +60,9 @@ public final class MarkdownGenerator {
                 .append("`\n\n");
         markdown.append("Max Depth: `")
                 .append(maxDepth)
+                .append("`\n\n");
+        markdown.append("Direction: `")
+                .append(direction.getCliValue())
                 .append("`\n\n");
         markdown.append("---\n\n");
         markdown.append("## Call Tree\n\n");

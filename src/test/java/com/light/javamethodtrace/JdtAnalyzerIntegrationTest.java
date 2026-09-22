@@ -64,11 +64,27 @@ class JdtAnalyzerIntegrationTest {
         assertEquals("CService.finish()", traceRoot.getChildren().get(0).getChildren().get(0)
                 .getMethod().getDisplayName());
 
+        List<MethodNode> finishMethods = index.findCandidates("CService", "finish");
+        assertEquals(1, finishMethods.size());
+        MethodNode.TraceNode callersTrace = analyzer.trace(
+                finishMethods.get(0),
+                5,
+                JdtAnalyzer.TraceDirection.UP);
+        assertEquals("BService.process()", callersTrace.getChildren().get(0).getMethod().getDisplayName());
+        assertEquals("AService.execute()", callersTrace.getChildren().get(0).getChildren().get(0)
+                .getMethod().getDisplayName());
+
         Path outputPath = projectPath.resolve("trace.md");
-        MarkdownGenerator.write(outputPath, traceRoot, projectPath, 5);
+        MarkdownGenerator.write(
+                outputPath,
+                callersTrace,
+                projectPath,
+                5,
+                JdtAnalyzer.TraceDirection.UP);
         String markdown = Files.readString(outputPath, StandardCharsets.UTF_8);
         assertTrue(markdown.contains("````java"));
-        assertTrue(markdown.contains("CService.finish()"));
+        assertTrue(markdown.contains("Direction: `up`"));
+        assertTrue(markdown.contains("AService.execute()"));
     }
 
     /**
