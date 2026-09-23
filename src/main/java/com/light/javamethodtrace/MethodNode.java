@@ -128,7 +128,7 @@ public final class MethodNode {
      */
     static String signatureFromBinding(IMethodBinding binding) {
         List<String> parameterTypes = readParameterTypesFromBinding(binding);
-        return buildMethodSignature(binding.getName(), parameterTypes);
+        return buildQualifiedMethodSignature(binding.getName(), parameterTypes);
     }
 
     /**
@@ -263,7 +263,7 @@ public final class MethodNode {
      * @return 完整 Class 加 Method Signature
      */
     public String getUniqueKey() {
-        return fullyQualifiedClassName + "#" + methodSignature;
+        return fullyQualifiedClassName + "#" + getQualifiedMethodSignature();
     }
 
     /**
@@ -377,6 +377,19 @@ public final class MethodNode {
                 .map(MethodNode::simpleTypeName)
                 .collect(Collectors.toList());
         return methodName + "(" + String.join(", ", displayTypes) + ")";
+    }
+
+    /**
+     * 使用完整參數型別建立方法簽章，避免不同套件的同名型別發生識別鍵碰撞。
+     *
+     * @param methodName Method 名稱
+     * @param parameterTypes 完整參數型別
+     * @return 完整 Method Signature
+     */
+    private static String buildQualifiedMethodSignature(
+            String methodName,
+            List<String> parameterTypes) {
+        return methodName + "(" + String.join(", ", parameterTypes) + ")";
     }
 
     /**
