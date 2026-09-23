@@ -1,6 +1,8 @@
 package com.light.javamethodtrace;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.io.IOException;
@@ -34,8 +36,12 @@ class JdtAnalyzerIntegrationTest {
                 "package com.demo;\n"
                         + "public class AService {\n"
                         + "    private final BService bService = new BService();\n"
+                        + "    private final Worker worker = new WorkerImpl();\n"
                         + "    public String execute() {\n"
                         + "        return bService.process();\n"
+                        + "    }\n"
+                        + "    public void invokeWorker() {\n"
+                        + "        worker.work();\n"
                         + "    }\n"
                         + "}\n");
         writeJava(sourceRoot.resolve("BService.java"),
@@ -52,6 +58,16 @@ class JdtAnalyzerIntegrationTest {
                         + "    public String finish() {\n"
                         + "        return \"```\";\n"
                         + "    }\n"
+                        + "}\n");
+        writeJava(sourceRoot.resolve("Worker.java"),
+                "package com.demo;\n"
+                        + "public interface Worker {\n"
+                        + "    void work();\n"
+                        + "}\n");
+        writeJava(sourceRoot.resolve("WorkerImpl.java"),
+                "package com.demo;\n"
+                        + "public class WorkerImpl implements Worker {\n"
+                        + "    public void work() { }\n"
                         + "}\n");
 
         JdtAnalyzer analyzer = new JdtAnalyzer(projectPath, StandardCharsets.UTF_8);
@@ -75,6 +91,15 @@ class JdtAnalyzerIntegrationTest {
         assertEquals("AService.execute()", callersTrace.getChildren().get(0).getChildren().get(0)
                 .getMethod().getDisplayName());
 
+        List<MethodNode> implementationMethods = index.findCandidates("WorkerImpl", "work");
+        assertEquals(1, implementationMethods.size());
+        MethodNode.TraceNode implementationCallers = analyzer.trace(
+                implementationMethods.get(0),
+                2,
+                JdtAnalyzer.TraceDirection.UP);
+        assertEquals("AService.invokeWorker()",
+                implementationCallers.getChildren().get(0).getMethod().getDisplayName());
+
         Path outputPath = projectPath.resolve("trace.md");
         MarkdownGenerator.write(
                 outputPath,
@@ -94,22 +119,46 @@ class JdtAnalyzerIntegrationTest {
      * @throws IOException 建立測試專案失敗時拋出
      */
     @Test
-    void shouldRequireFullSignatureToDisambiguateOverloadedMethods() throws IOException {
+    void shouldRequireQualifiedSignatureToDisambiguateSameSimpleTypeNames() throws IOException {
         Path projectPath = temporaryDirectory.resolve("overload-project");
-        Path sourceFile = projectPath.resolve("source-code/com/example/OverloadService.java");
-        writeJava(sourceFile,
+        Path sourceRoot = projectPath.resolve("source-code");
+        writeJava(sourceRoot.resolve("com/alpha/Request.java"),
+                "package com.alpha;\n"
+                        + "public class Request { }\n");
+        writeJava(sourceRoot.resolve("com/beta/Request.java"),
+                "package com.beta;\n"
+                        + "public class Request { }\n");
+        writeJava(sourceRoot.resolve("com/example/OverloadService.java"),
                 "package com.example;\n"
                         + "public class OverloadService {\n"
-                        + "    public void update(String policyNo) { }\n"
-                        + "    public void update(Integer policyId) { }\n"
+                        + "    public void update(com.alpha.Request request) { }\n"
+                        + "    public void update(com.beta.Request request) { }\n"
+                        + "    public void updateAlpha() { update(new com.alpha.Request()); }\n"
+                        + "    public void updateBeta() { update(new com.beta.Request()); }\n"
                         + "}\n");
 
-        JavaSourceIndex index = new JdtAnalyzer(projectPath, StandardCharsets.UTF_8).buildIndex();
+        JdtAnalyzer analyzer = new JdtAnalyzer(projectPath, StandardCharsets.UTF_8);
+        JavaSourceIndex index = analyzer.buildIndex();
 
         assertEquals(2, index.findCandidates("OverloadService", "update").size());
-        List<MethodNode> stringMethod = index.findCandidates("OverloadService", "update(String)");
-        assertEquals(1, stringMethod.size());
-        assertEquals("update(String)", stringMethod.get(0).getMethodSignature());
+        List<MethodNode> alphaMethod = index.findCandidates(
+                "OverloadService",
+                "update(com.alpha.Request)");
+        List<MethodNode> betaMethod = index.findCandidates(
+                "OverloadService",
+                "update(com.beta.Request)");
+        assertEquals(1, alphaMethod.size());
+        assertEquals(1, betaMethod.size());
+        assertNotEquals(alphaMethod.get(0).getUniqueKey(), betaMethod.get(0).getUniqueKey());
+
+        MethodNode.TraceNode alphaCallers = analyzer.trace(
+                alphaMethod.get(0), 2, JdtAnalyzer.TraceDirection.UP);
+        MethodNode.TraceNode betaCallers = analyzer.trace(
+                betaMethod.get(0), 2, JdtAnalyzer.TraceDirection.UP);
+        assertEquals("OverloadService.updateAlpha()",
+                alphaCallers.getChildren().get(0).getMethod().getDisplayName());
+        assertEquals("OverloadService.updateBeta()",
+                betaCallers.getChildren().get(0).getMethod().getDisplayName());
     }
 
     /**
@@ -150,6 +199,21 @@ class JdtAnalyzerIntegrationTest {
         String markdown = Files.readString(outputPath, StandardCharsets.UTF_8);
         assertTrue(markdown.contains("Max Depth: `1`"));
         assertTrue(markdown.contains("Direction: `down`"));
+    }
+
+    /**
+     * 驗證 YAML 重複設定名稱會被拒絕，避免設定值遭到靜默覆蓋。
+     *
+     * @throws IOException 寫入測試設定檔失敗時拋出
+     */
+    @Test
+    void shouldRejectDuplicateYamlKeys() throws IOException {
+        Path configPath = temporaryDirectory.resolve("duplicate.yml");
+        Files.writeString(configPath,
+                "project: first\nproject: second\n",
+                StandardCharsets.UTF_8);
+
+        assertThrows(IllegalArgumentException.class, () -> YamlConfigLoader.load(configPath));
     }
 
     /**

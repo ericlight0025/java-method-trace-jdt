@@ -23,6 +23,7 @@ import org.eclipse.jdt.core.dom.ASTParser;
 import org.eclipse.jdt.core.dom.ASTVisitor;
 import org.eclipse.jdt.core.dom.CompilationUnit;
 import org.eclipse.jdt.core.dom.IMethodBinding;
+import org.eclipse.jdt.core.dom.ITypeBinding;
 import org.eclipse.jdt.core.dom.LambdaExpression;
 import org.eclipse.jdt.core.dom.MethodDeclaration;
 import org.eclipse.jdt.core.dom.MethodInvocation;
@@ -44,6 +45,7 @@ public final class JdtAnalyzer {
     private int scannedFileCount;
     private JavaSourceIndex sourceIndex;
     private Map<String, List<MethodNode>> callersByCalleeKey = new HashMap<String, List<MethodNode>>();
+    private boolean callerIndexBuilt;
     private Map<Path, Path> sourceRootByFile = new HashMap<Path, Path>();
     private List<Path> sourceRoots = List.of();
     private List<String> classpathEntries = List.of();
@@ -85,6 +87,8 @@ public final class JdtAnalyzer {
                 .collect(Collectors.toList());
         classpathEntries = detectClasspathEntries();
         sourceIndex = new JavaSourceIndex();
+        callersByCalleeKey = new HashMap<String, List<MethodNode>>();
+        callerIndexBuilt = false;
 
         for (Path javaFile : javaFiles) {
             String source = sourceByFile.get(javaFile);
@@ -112,8 +116,6 @@ public final class JdtAnalyzer {
                 }
             });
         }
-
-        buildCallerIndex();
 
         return sourceIndex;
     }
@@ -158,6 +160,9 @@ public final class JdtAnalyzer {
         }
         if (direction == null) {
             throw new IllegalArgumentException("追蹤方向不可為空。");
+        }
+        if (direction == TraceDirection.UP && !callerIndexBuilt) {
+            buildCallerIndex();
         }
 
         Set<String> currentPath = new HashSet<String>();
@@ -260,13 +265,18 @@ public final class JdtAnalyzer {
      */
     private void buildCallerIndex() {
         callersByCalleeKey = new HashMap<String, List<MethodNode>>();
+        Map<String, List<MethodNode>> implementationsByDeclarationKey = buildOverrideIndex();
         for (MethodNode caller : sourceIndex.getMethods()) {
             for (MethodNode callee : findProjectMethodInvocations(caller)) {
-                List<MethodNode> callers = callersByCalleeKey.computeIfAbsent(
-                        callee.getUniqueKey(),
-                        ignored -> new ArrayList<MethodNode>());
-                if (!callers.contains(caller)) {
-                    callers.add(caller);
+                addCaller(callee, caller);
+                String declarationKey = callee.getBindingKey();
+                if (declarationKey != null) {
+                    List<MethodNode> implementations = implementationsByDeclarationKey.get(declarationKey);
+                    if (implementations != null) {
+                        for (MethodNode implementation : implementations) {
+                            addCaller(implementation, caller);
+                        }
+                    }
                 }
             }
         }
@@ -276,6 +286,110 @@ public final class JdtAnalyzer {
                 .thenComparingInt(MethodNode::getStartLine);
         for (List<MethodNode> callers : callersByCalleeKey.values()) {
             callers.sort(callerOrder);
+        }
+        callerIndexBuilt = true;
+    }
+
+    /**
+     * 建立介面或父類別 Method 到專案內覆寫實作的索引。
+     *
+     * @return 宣告 Binding Key 與覆寫 Method 的對照表
+     */
+    private Map<String, List<MethodNode>> buildOverrideIndex() {
+        Map<String, List<MethodNode>> result = new HashMap<String, List<MethodNode>>();
+        for (MethodNode implementation : sourceIndex.getMethods()) {
+            IMethodBinding methodBinding = implementation.getDeclaration().resolveBinding();
+            if (methodBinding == null || methodBinding.getDeclaringClass() == null) {
+                continue;
+            }
+
+            ITypeBinding declaringType = methodBinding.getDeclaringClass();
+            Set<String> visitedTypeKeys = new HashSet<String>();
+            collectOverriddenDeclarations(
+                    implementation,
+                    methodBinding,
+                    declaringType.getSuperclass(),
+                    visitedTypeKeys,
+                    result);
+            for (ITypeBinding interfaceType : declaringType.getInterfaces()) {
+                collectOverriddenDeclarations(
+                        implementation,
+                        methodBinding,
+                        interfaceType,
+                        visitedTypeKeys,
+                        result);
+            }
+        }
+        return result;
+    }
+
+    /**
+     * 遞迴檢查父型別宣告，記錄目前 Method 覆寫的契約 Method。
+     *
+     * @param implementation 專案內實作 Method
+     * @param implementationBinding 實作 Method Binding
+     * @param parentType 父類別或介面
+     * @param visitedTypeKeys 已檢查型別 Key
+     * @param overridesByDeclarationKey 覆寫關係索引
+     */
+    private void collectOverriddenDeclarations(
+            MethodNode implementation,
+            IMethodBinding implementationBinding,
+            ITypeBinding parentType,
+            Set<String> visitedTypeKeys,
+            Map<String, List<MethodNode>> overridesByDeclarationKey) {
+        if (parentType == null) {
+            return;
+        }
+
+        String typeKey = parentType.getKey();
+        if (typeKey == null || !visitedTypeKeys.add(typeKey)) {
+            return;
+        }
+
+        for (IMethodBinding parentMethod : parentType.getDeclaredMethods()) {
+            if (!implementationBinding.overrides(parentMethod)) {
+                continue;
+            }
+            String declarationKey = parentMethod.getMethodDeclaration().getKey();
+            if (declarationKey != null) {
+                List<MethodNode> implementations = overridesByDeclarationKey.computeIfAbsent(
+                        declarationKey,
+                        ignored -> new ArrayList<MethodNode>());
+                if (!implementations.contains(implementation)) {
+                    implementations.add(implementation);
+                }
+            }
+        }
+
+        collectOverriddenDeclarations(
+                implementation,
+                implementationBinding,
+                parentType.getSuperclass(),
+                visitedTypeKeys,
+                overridesByDeclarationKey);
+        for (ITypeBinding interfaceType : parentType.getInterfaces()) {
+            collectOverriddenDeclarations(
+                    implementation,
+                    implementationBinding,
+                    interfaceType,
+                    visitedTypeKeys,
+                    overridesByDeclarationKey);
+        }
+    }
+
+    /**
+     * 將呼叫端加入指定被呼叫 Method 的反向索引。
+     *
+     * @param callee 被呼叫 Method
+     * @param caller 呼叫端 Method
+     */
+    private void addCaller(MethodNode callee, MethodNode caller) {
+        List<MethodNode> callers = callersByCalleeKey.computeIfAbsent(
+                callee.getUniqueKey(),
+                ignored -> new ArrayList<MethodNode>());
+        if (!callers.contains(caller)) {
+            callers.add(caller);
         }
     }
 

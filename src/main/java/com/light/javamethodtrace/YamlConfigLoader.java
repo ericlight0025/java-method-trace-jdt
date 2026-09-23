@@ -41,7 +41,9 @@ public final class YamlConfigLoader {
      * @throws IOException 讀取設定檔失敗時拋出
      */
     public static Map<String, String> load(Path configPath) throws IOException {
-        Yaml yaml = new Yaml(new SafeConstructor(new LoaderOptions()));
+        LoaderOptions loaderOptions = new LoaderOptions();
+        loaderOptions.setAllowDuplicateKeys(false);
+        Yaml yaml = new Yaml(new SafeConstructor(loaderOptions));
         Object document;
         try (Reader reader = Files.newBufferedReader(configPath, StandardCharsets.UTF_8)) {
             try {

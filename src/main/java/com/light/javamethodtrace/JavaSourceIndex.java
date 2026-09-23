@@ -129,8 +129,10 @@ public final class JavaSourceIndex {
         for (int index = 0; index < actualTypes.size(); index++) {
             String actual = normalizeType(actualTypes.get(index));
             String requested = normalizeType(requestedTypes.get(index));
+            boolean requestedIsQualified = requested.indexOf('.') >= 0;
             if (!actual.equals(requested)
-                    && !MethodNode.simpleTypeName(actual).equals(MethodNode.simpleTypeName(requested))) {
+                    && (requestedIsQualified
+                    || !MethodNode.simpleTypeName(actual).equals(MethodNode.simpleTypeName(requested)))) {
                 return false;
             }
         }
