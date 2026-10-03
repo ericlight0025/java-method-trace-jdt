@@ -111,6 +111,8 @@ class JdtAnalyzerIntegrationTest {
         assertTrue(markdown.contains("````java"));
         assertTrue(markdown.contains("Direction: `up`"));
         assertTrue(markdown.contains("AService.execute()"));
+        assertTrue(markdown.contains("## Call Tree\n\n```text\n"));
+        assertTrue(markdown.contains("```\n\n## Method Detail"));
     }
 
     /**
@@ -214,6 +216,63 @@ class JdtAnalyzerIntegrationTest {
                 StandardCharsets.UTF_8);
 
         assertThrows(IllegalArgumentException.class, () -> YamlConfigLoader.load(configPath));
+    }
+
+    @Test
+    void shouldPreserveArrayDimensionsAndTraceEachOverload() throws IOException {
+        Path projectPath = temporaryDirectory.resolve("arrays-project");
+        writeJava(projectPath.resolve("src/com/demo/ArraysService.java"),
+                "package com.demo; public class ArraysService {\n"
+                        + " public void update(String[] value) {}\n"
+                        + " public void update(String[][] value) {}\n"
+                        + " public void update(String[][][] value) {}\n"
+                        + " public void invokeOne() { update(new String[0]); }\n"
+                        + " public void invokeTwo() { update(new String[0][0]); }\n"
+                        + " public void invokeThree() { update(new String[0][0][0]); }\n"
+                        + "}\n");
+        JdtAnalyzer analyzer = new JdtAnalyzer(projectPath);
+        JavaSourceIndex index = analyzer.buildIndex();
+        for (int dimension = 1; dimension <= 3; dimension++) {
+            String type = "String" + "[]".repeat(dimension);
+            List<MethodNode> candidates = index.findCandidates("ArraysService", "update(" + type + ")");
+            assertEquals(1, candidates.size(), type);
+            assertEquals("update(java.lang." + type + ")", candidates.get(0).getQualifiedMethodSignature());
+            String caller = List.of("invokeOne", "invokeTwo", "invokeThree").get(dimension - 1);
+            MethodNode.TraceNode up = analyzer.trace(candidates.get(0), 1, JdtAnalyzer.TraceDirection.UP);
+            assertEquals(1, up.getChildren().size());
+            assertEquals(caller, up.getChildren().get(0).getMethod().getMethodName());
+            MethodNode root = index.findCandidates("ArraysService", caller).get(0);
+            assertEquals(candidates.get(0).getUniqueKey(),
+                    analyzer.trace(root, 1).getChildren().get(0).getMethod().getUniqueKey());
+        }
+    }
+
+    @Test
+    void shouldTraceSuperCallsWithoutTreatingThemAsVirtualDispatch() throws IOException {
+        Path projectPath = temporaryDirectory.resolve("super-project");
+        writeJava(projectPath.resolve("src/com/demo/Parent.java"),
+                "package com.demo; public class Parent { public void work() {} }\n");
+        writeJava(projectPath.resolve("src/com/demo/Child.java"),
+                "package com.demo; public class Child extends Parent {\n"
+                        + " public void work() { super.work(); }\n"
+                        + " public void invokeParent() { super.work(); }\n"
+                        + "}\n");
+        writeJava(projectPath.resolve("src/com/demo/Caller.java"),
+                "package com.demo; public class Caller {\n"
+                        + " public void invoke(Parent parent) { parent.work(); }\n"
+                        + "}\n");
+        JdtAnalyzer analyzer = new JdtAnalyzer(projectPath);
+        JavaSourceIndex index = analyzer.buildIndex();
+        MethodNode child = index.findCandidates("Child", "work").get(0);
+        MethodNode parent = index.findCandidates("Parent", "work").get(0);
+        MethodNode.TraceNode down = analyzer.trace(child, 2);
+        assertEquals(1, down.getChildren().size());
+        assertEquals(parent.getUniqueKey(), down.getChildren().get(0).getMethod().getUniqueKey());
+        MethodNode.TraceNode parentUp = analyzer.trace(parent, 1, JdtAnalyzer.TraceDirection.UP);
+        assertEquals(3, parentUp.getChildren().size());
+        MethodNode.TraceNode childUp = analyzer.trace(child, 1, JdtAnalyzer.TraceDirection.UP);
+        assertEquals(1, childUp.getChildren().size());
+        assertEquals("Caller.invoke(Parent)", childUp.getChildren().get(0).getMethod().getDisplayName());
     }
 
     /**

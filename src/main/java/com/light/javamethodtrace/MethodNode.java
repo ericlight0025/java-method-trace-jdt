@@ -405,7 +405,7 @@ public final class MethodNode {
 
         ITypeBinding erasure = typeBinding.getErasure();
         if (erasure.isArray()) {
-            return typeName(erasure.getElementType()) + "[]";
+            return typeName(erasure.getElementType()) + "[]".repeat(erasure.getDimensions());
         }
 
         String qualifiedName = erasure.getQualifiedName();

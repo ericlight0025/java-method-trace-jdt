@@ -66,7 +66,11 @@ public final class MarkdownGenerator {
                 .append("`\n\n");
         markdown.append("---\n\n");
         markdown.append("## Call Tree\n\n");
-        appendTree(markdown, root, "", true, true, projectPath);
+        StringBuilder tree = new StringBuilder();
+        appendTree(tree, root, "", true, true, projectPath);
+        String treeFence = resolveCodeFence(tree.toString());
+        markdown.append(treeFence).append("text\n")
+                .append(tree).append(treeFence).append('\n');
         markdown.append("\n## Method Detail\n\n");
 
         Map<String, MethodNode> methods = new LinkedHashMap<>();

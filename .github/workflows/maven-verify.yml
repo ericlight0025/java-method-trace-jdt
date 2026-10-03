@@ -15,3 +15,11 @@ jobs:
           java-version: '11'
           cache: maven
       - run: mvn -B verify
+      - name: Smoke test packaged CLI in both directions
+        run: |
+          java -jar target/java-method-trace.jar --project demo-project --class AService --method execute --depth 5 --output target/demo-down.md
+          java -jar target/java-method-trace.jar --project demo-project --class CService --method calculate --depth 5 --direction up --output target/demo-up.md
+          grep -q 'BService.process()' target/demo-down.md
+          grep -q 'CService.calculate()' target/demo-down.md
+          grep -q 'BService.process()' target/demo-up.md
+          grep -q 'AService.execute()' target/demo-up.md

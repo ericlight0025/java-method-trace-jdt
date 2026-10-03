@@ -27,6 +27,7 @@ import org.eclipse.jdt.core.dom.ITypeBinding;
 import org.eclipse.jdt.core.dom.LambdaExpression;
 import org.eclipse.jdt.core.dom.MethodDeclaration;
 import org.eclipse.jdt.core.dom.MethodInvocation;
+import org.eclipse.jdt.core.dom.SuperMethodInvocation;
 
 /**
  * 使用 Eclipse JDT Core 掃描 Java 原始碼並建立 Method 呼叫追蹤。
@@ -219,6 +220,12 @@ public final class JdtAnalyzer {
      * @return 專案內被呼叫的 Method，順序與原始碼出現順序相同
      */
     private List<MethodNode> findProjectMethodInvocations(MethodNode method) {
+        return findProjectMethodInvocations(method, Map.of());
+    }
+
+    private List<MethodNode> findProjectMethodInvocations(
+            MethodNode method,
+            Map<String, List<MethodNode>> implementationsByDeclarationKey) {
         List<MethodNode> result = new ArrayList<MethodNode>();
         method.getDeclaration().accept(new ASTVisitor() {
             @Override
@@ -237,6 +244,18 @@ public final class JdtAnalyzer {
                 IMethodBinding binding = invocation.resolveMethodBinding();
                 MethodNode target = sourceIndex.findByBinding(binding);
                 if (target != null) {
+                    result.add(target);
+                    result.addAll(implementationsByDeclarationKey.getOrDefault(
+                            target.getUniqueKey(), List.of()));
+                }
+                return true;
+            }
+
+            @Override
+            public boolean visit(SuperMethodInvocation invocation) {
+                MethodNode target = sourceIndex.findByBinding(invocation.resolveMethodBinding());
+                if (target != null) {
+                    // super 呼叫固定指向父類別宣告，不展開覆寫實作。
                     result.add(target);
                 }
                 return true;
@@ -267,17 +286,9 @@ public final class JdtAnalyzer {
         callersByCalleeKey = new HashMap<String, List<MethodNode>>();
         Map<String, List<MethodNode>> implementationsByDeclarationKey = buildOverrideIndex();
         for (MethodNode caller : sourceIndex.getMethods()) {
-            for (MethodNode callee : findProjectMethodInvocations(caller)) {
+            for (MethodNode callee : findProjectMethodInvocations(
+                    caller, implementationsByDeclarationKey)) {
                 addCaller(callee, caller);
-                String declarationKey = callee.getBindingKey();
-                if (declarationKey != null) {
-                    List<MethodNode> implementations = implementationsByDeclarationKey.get(declarationKey);
-                    if (implementations != null) {
-                        for (MethodNode implementation : implementations) {
-                            addCaller(implementation, caller);
-                        }
-                    }
-                }
             }
         }
 
@@ -351,8 +362,12 @@ public final class JdtAnalyzer {
             if (!implementationBinding.overrides(parentMethod)) {
                 continue;
             }
-            String declarationKey = parentMethod.getMethodDeclaration().getKey();
-            if (declarationKey != null) {
+            IMethodBinding parentDeclaration = parentMethod.getMethodDeclaration();
+            // 不同 CompilationUnit 的 Binding Key 可能不同（尤其 Windows Source Root）；
+            // 用宣告型別與完整簽章跨 AST 對照覆寫關係。
+            String declarationKey = parentDeclaration.getDeclaringClass().getQualifiedName()
+                    .replace('$', '.') + "#" + MethodNode.signatureFromBinding(parentDeclaration);
+            if (!declarationKey.isBlank()) {
                 List<MethodNode> implementations = overridesByDeclarationKey.computeIfAbsent(
                         declarationKey,
                         ignored -> new ArrayList<MethodNode>());
