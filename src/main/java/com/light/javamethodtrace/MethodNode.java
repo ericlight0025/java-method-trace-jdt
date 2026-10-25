@@ -282,6 +282,7 @@ public final class MethodNode {
 
         private final MethodNode method;
         private final boolean cycle;
+        private final boolean repeated;
         private final List<TraceNode> children = new ArrayList<>();
 
         /**
@@ -291,8 +292,20 @@ public final class MethodNode {
          * @param cycle 是否為循環呼叫
          */
         public TraceNode(MethodNode method, boolean cycle) {
+            this(method, cycle, false);
+        }
+
+        /**
+         * 建立追蹤節點。
+         *
+         * @param method Method
+         * @param cycle 是否為循環呼叫
+         * @param repeated 是否已在上方展開過，因此不再重複展開
+         */
+        public TraceNode(MethodNode method, boolean cycle, boolean repeated) {
             this.method = method;
             this.cycle = cycle;
+            this.repeated = repeated;
         }
 
         /**
@@ -311,6 +324,27 @@ public final class MethodNode {
          */
         public boolean isCycle() {
             return cycle;
+        }
+
+        /**
+         * 判斷是否為已在上方展開過的重複節點。
+         *
+         * @return true 代表子節點請見上方第一次出現處
+         */
+        public boolean isRepeated() {
+            return repeated;
+        }
+
+        /**
+         * 取得顯示在 Method 名稱後的標記。
+         *
+         * @return 循環或重複標記，一般節點為空字串
+         */
+        public String getMarker() {
+            if (cycle) {
+                return " [CYCLE]";
+            }
+            return repeated ? " [SEE ABOVE]" : "";
         }
 
         /**
@@ -455,6 +489,11 @@ public final class MethodNode {
             String qualifiedName = declaringClass.getQualifiedName();
             if (qualifiedName != null && !qualifiedName.isBlank()) {
                 return qualifiedName.replace('$', '.');
+            }
+            // 匿名與區域類別沒有完整名稱；用 Binary Name（例如 PolicyService$1）避免與外層類別撞名。
+            String binaryName = declaringClass.getBinaryName();
+            if (binaryName != null && !binaryName.isBlank()) {
+                return binaryName;
             }
         }
 
