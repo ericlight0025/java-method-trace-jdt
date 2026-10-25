@@ -137,7 +137,7 @@ public final class Main {
      */
     private static void printTrace(MethodNode.TraceNode traceNode, int depth) {
         String prefix = depth == 0 ? "" : "-> " + "  ".repeat(depth - 1);
-        String cycleText = traceNode.isCycle() ? " [CYCLE]" : "";
+        String cycleText = traceNode.getMarker();
         System.out.println(prefix + traceNode.getMethod().getDisplayName() + cycleText);
 
         for (MethodNode.TraceNode child : traceNode.getChildren()) {

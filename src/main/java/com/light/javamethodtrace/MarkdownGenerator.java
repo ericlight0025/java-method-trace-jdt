@@ -107,7 +107,7 @@ public final class MarkdownGenerator {
             boolean isLast,
             boolean root,
             Path projectPath) {
-        String cycleText = node.isCycle() ? " [CYCLE]" : "";
+        String cycleText = node.getMarker();
 
         if (root) {
             markdown.append(node.getMethod().getDisplayName())

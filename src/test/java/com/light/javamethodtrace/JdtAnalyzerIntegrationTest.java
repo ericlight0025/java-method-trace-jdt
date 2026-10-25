@@ -276,6 +276,100 @@ class JdtAnalyzerIntegrationTest {
     }
 
     /**
+     * 驗證往下追蹤會接到介面的實作，同一 Method 呼叫多次只列一次，重複子樹標記為 SEE ABOVE。
+     *
+     * @throws IOException 建立測試專案失敗時拋出
+     */
+    @Test
+    void shouldTraceImplementationsDownAndNotExpandRepeatedMethodsTwice() throws IOException {
+        Path projectPath = temporaryDirectory.resolve("down-project");
+        writeJava(projectPath.resolve("src/com/demo/Service.java"),
+                "package com.demo; public interface Service { void update(); }\n");
+        writeJava(projectPath.resolve("src/com/demo/ServiceImpl.java"),
+                "package com.demo; public class ServiceImpl implements Service {\n"
+                        + " private final Dao dao = new Dao();\n"
+                        + " public void update() { dao.write(); }\n"
+                        + "}\n");
+        writeJava(projectPath.resolve("src/com/demo/Dao.java"),
+                "package com.demo; public class Dao { public void write() { log(); } void log() { } }\n");
+        writeJava(projectPath.resolve("src/com/demo/Controller.java"),
+                "package com.demo; public class Controller {\n"
+                        + " private Service service; private final Dao dao = new Dao();\n"
+                        + " public void handle() { dao.write(); service.update(); service.update(); }\n"
+                        + "}\n");
+
+        JdtAnalyzer analyzer = new JdtAnalyzer(projectPath);
+        JavaSourceIndex index = analyzer.buildIndex();
+        MethodNode handle = index.findCandidates("Controller", "handle").get(0);
+        MethodNode.TraceNode down = analyzer.trace(handle, 5);
+
+        List<MethodNode.TraceNode> children = down.getChildren();
+        assertEquals(3, children.size());
+        MethodNode.TraceNode firstWrite = children.get(0);
+        assertEquals("Dao.write()", firstWrite.getMethod().getDisplayName());
+        assertEquals(1, firstWrite.getChildren().size());
+        assertEquals("Service.update()", children.get(1).getMethod().getDisplayName());
+        assertEquals("ServiceImpl.update()", children.get(2).getMethod().getDisplayName());
+        MethodNode.TraceNode repeatedWrite = children.get(2).getChildren().get(0);
+        assertEquals("Dao.write()", repeatedWrite.getMethod().getDisplayName());
+        assertTrue(repeatedWrite.isRepeated());
+        assertTrue(repeatedWrite.getChildren().isEmpty());
+        assertEquals(" [SEE ABOVE]", repeatedWrite.getMarker());
+    }
+
+    /**
+     * 驗證匿名類別的 Method 不會被當成外層類別的同名 Method。
+     *
+     * @throws IOException 建立測試專案失敗時拋出
+     */
+    @Test
+    void shouldNameAnonymousClassMethodsSeparately() throws IOException {
+        Path projectPath = temporaryDirectory.resolve("anonymous-project");
+        writeJava(projectPath.resolve("src/com/demo/Outer.java"),
+                "package com.demo; public class Outer {\n"
+                        + " public void start() { new Runnable() { public void run() { helper(); } }.run(); }\n"
+                        + " public void run() { }\n"
+                        + " void helper() { }\n"
+                        + "}\n");
+
+        JdtAnalyzer analyzer = new JdtAnalyzer(projectPath);
+        JavaSourceIndex index = analyzer.buildIndex();
+
+        assertEquals(1, index.findCandidates("Outer", "run").size());
+        MethodNode start = index.findCandidates("Outer", "start").get(0);
+        MethodNode.TraceNode anonymousRun = analyzer.trace(start, 2).getChildren().get(0);
+        assertEquals("Outer$1.run()", anonymousRun.getMethod().getDisplayName());
+        assertEquals("Outer.helper()", anonymousRun.getChildren().get(0).getMethod().getDisplayName());
+    }
+
+    /**
+     * 驗證專案混用編碼時，單一檔案解碼失敗不會中止分析，且 Method 位置仍正確。
+     *
+     * @throws IOException 建立測試專案失敗時拋出
+     */
+    @Test
+    void shouldAnalyzeFilesWithDifferentEncoding() throws IOException {
+        Path projectPath = temporaryDirectory.resolve("mixed-encoding-project");
+        writeJava(projectPath.resolve("src/com/demo/Modern.java"),
+                "package com.demo; public class Modern { public void call() { new Legacy().old(); } }\n");
+        Path legacyFile = projectPath.resolve("src/com/demo/Legacy.java");
+        Files.write(legacyFile, ("package com.demo;\n"
+                + "// 保單舊程式說明\n"
+                + "public class Legacy {\n"
+                + "    public void old() { }\n"
+                + "}\n").getBytes("MS950"));
+
+        JdtAnalyzer analyzer = new JdtAnalyzer(projectPath, StandardCharsets.UTF_8);
+        JavaSourceIndex index = analyzer.buildIndex();
+
+        MethodNode old = index.findCandidates("Legacy", "old").get(0);
+        assertEquals("public void old() { }", old.getSourceCode());
+        assertEquals(4, old.getStartLine());
+        MethodNode call = index.findCandidates("Modern", "call").get(0);
+        assertEquals("Legacy.old()", analyzer.trace(call, 1).getChildren().get(0).getMethod().getDisplayName());
+    }
+
+    /**
      * 建立一個 UTF-8 Java 原始檔。
      *
      * @param filePath 原始檔路徑

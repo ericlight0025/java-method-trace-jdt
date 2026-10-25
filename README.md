@@ -128,6 +128,12 @@ java -jar target/java-method-trace.jar \
   --output "trace.md"
 ```
 
+## 追蹤結果標記
+
+- `[CYCLE]`：呼叫回到目前路徑上的 Method，不再展開。
+- `[SEE ABOVE]`：同一個 Method 已在上方展開過，子節點請看第一次出現的位置，避免結果重複爆量。
+- 呼叫介面或父類別的 Method 時，往上、往下追蹤都會一併列出專案內的覆寫實作。
+
 ## 第一版刻意不處理
 
 - JSP、JavaScript、XML、SQL、MyBatis Mapper

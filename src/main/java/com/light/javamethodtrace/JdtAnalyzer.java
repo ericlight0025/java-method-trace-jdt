@@ -2,6 +2,8 @@ package com.light.javamethodtrace;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.ByteBuffer;
+import java.nio.charset.CharacterCodingException;
 import java.nio.charset.Charset;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
@@ -22,6 +24,7 @@ import org.eclipse.jdt.core.dom.AST;
 import org.eclipse.jdt.core.dom.ASTParser;
 import org.eclipse.jdt.core.dom.ASTVisitor;
 import org.eclipse.jdt.core.dom.CompilationUnit;
+import org.eclipse.jdt.core.dom.FileASTRequestor;
 import org.eclipse.jdt.core.dom.IMethodBinding;
 import org.eclipse.jdt.core.dom.ITypeBinding;
 import org.eclipse.jdt.core.dom.LambdaExpression;
@@ -47,6 +50,7 @@ public final class JdtAnalyzer {
     private JavaSourceIndex sourceIndex;
     private Map<String, List<MethodNode>> callersByCalleeKey = new HashMap<String, List<MethodNode>>();
     private boolean callerIndexBuilt;
+    private Map<String, List<MethodNode>> implementationsByDeclarationKey;
     private Map<Path, Path> sourceRootByFile = new HashMap<Path, Path>();
     private List<Path> sourceRoots = List.of();
     private List<String> classpathEntries = List.of();
@@ -90,25 +94,30 @@ public final class JdtAnalyzer {
         sourceIndex = new JavaSourceIndex();
         callersByCalleeKey = new HashMap<String, List<MethodNode>>();
         callerIndexBuilt = false;
+        implementationsByDeclarationKey = null;
 
+        Map<Path, CompilationUnit> compilationUnits = parseAll(javaFiles);
         for (Path javaFile : javaFiles) {
             String source = sourceByFile.get(javaFile);
-            CompilationUnit compilationUnit;
-            try {
-                compilationUnit = parse(javaFile, source);
-            } catch (RuntimeException exception) {
-                System.err.println("Warning: JDT 無法解析檔案，已略過："
-                        + projectPath.relativize(javaFile)
-                        + "，原因：" + exception.getMessage());
-                continue;
+            CompilationUnit compilationUnit = compilationUnits.get(javaFile);
+            if (compilationUnit == null) {
+                try {
+                    compilationUnit = parse(javaFile, source);
+                } catch (RuntimeException exception) {
+                    System.err.println("Warning: JDT 無法解析檔案，已略過："
+                            + projectPath.relativize(javaFile)
+                            + "，原因：" + exception.getMessage());
+                    continue;
+                }
             }
 
-            compilationUnit.accept(new ASTVisitor() {
+            CompilationUnit parsedUnit = compilationUnit;
+            parsedUnit.accept(new ASTVisitor() {
                 @Override
                 public boolean visit(MethodDeclaration declaration) {
                     if (!declaration.isConstructor()) {
                         sourceIndex.add(MethodNode.from(
-                                compilationUnit,
+                                parsedUnit,
                                 declaration,
                                 javaFile,
                                 source));
@@ -168,7 +177,7 @@ public final class JdtAnalyzer {
 
         Set<String> currentPath = new HashSet<String>();
         currentPath.add(root.getUniqueKey());
-        return traceNode(root, 0, maxDepth, currentPath, direction);
+        return traceNode(root, 0, maxDepth, currentPath, new HashMap<String, Integer>(), direction);
     }
 
     /**
@@ -178,6 +187,7 @@ public final class JdtAnalyzer {
      * @param depth 目前深度
      * @param maxDepth 最大深度
      * @param currentPath 目前呼叫路徑上的 Method Key
+     * @param expandedDepths 已展開過子節點的 Method 與展開時的深度
      * @return 追蹤節點
      */
     private MethodNode.TraceNode traceNode(
@@ -185,18 +195,26 @@ public final class JdtAnalyzer {
             int depth,
             int maxDepth,
             Set<String> currentPath,
+            Map<String, Integer> expandedDepths,
             TraceDirection direction) {
         MethodNode.TraceNode traceNode = new MethodNode.TraceNode(method, false);
         if (depth >= maxDepth) {
             return traceNode;
         }
 
-        for (MethodNode relatedMethod : findRelatedMethods(method, direction)) {
+        List<MethodNode> relatedMethods = findRelatedMethods(method, direction);
+        if (!relatedMethods.isEmpty()) {
+            expandedDepths.put(method.getUniqueKey(), depth);
+        }
+        for (MethodNode relatedMethod : relatedMethods) {
             boolean cycle = currentPath.contains(relatedMethod.getUniqueKey());
-            MethodNode.TraceNode child = new MethodNode.TraceNode(relatedMethod, cycle);
+            // 同一 Method 已在上方以相同或更多剩餘深度展開時不再重複展開，避免樹狀結果指數成長。
+            Integer expandedDepth = expandedDepths.get(relatedMethod.getUniqueKey());
+            boolean repeated = !cycle && expandedDepth != null && expandedDepth <= depth + 1;
+            MethodNode.TraceNode child = new MethodNode.TraceNode(relatedMethod, cycle, repeated);
             traceNode.addChild(child);
 
-            if (!cycle) {
+            if (!cycle && !repeated) {
                 Set<String> nextPath = new HashSet<String>(currentPath);
                 nextPath.add(relatedMethod.getUniqueKey());
                 MethodNode.TraceNode expandedChild = traceNode(
@@ -204,6 +222,7 @@ public final class JdtAnalyzer {
                         depth + 1,
                         maxDepth,
                         nextPath,
+                        expandedDepths,
                         direction);
                 for (MethodNode.TraceNode grandChild : expandedChild.getChildren()) {
                     child.addChild(grandChild);
@@ -214,19 +233,16 @@ public final class JdtAnalyzer {
     }
 
     /**
-     * 找出某個 Method 內所有可解析且位於目前專案的 Method 呼叫。
+     * 找出某個 Method 內所有可解析且位於目前專案的 Method 呼叫，含介面或父類別方法的覆寫實作。
      *
      * @param method 目前 Method
-     * @return 專案內被呼叫的 Method，順序與原始碼出現順序相同
+     * @param implementationsByDeclarationKey 宣告與覆寫實作的對照表
+     * @return 專案內被呼叫的 Method，順序與原始碼出現順序相同，同一 Method 只列一次
      */
-    private List<MethodNode> findProjectMethodInvocations(MethodNode method) {
-        return findProjectMethodInvocations(method, Map.of());
-    }
-
     private List<MethodNode> findProjectMethodInvocations(
             MethodNode method,
             Map<String, List<MethodNode>> implementationsByDeclarationKey) {
-        List<MethodNode> result = new ArrayList<MethodNode>();
+        Set<MethodNode> result = new LinkedHashSet<MethodNode>();
         method.getDeclaration().accept(new ASTVisitor() {
             @Override
             public boolean visit(MethodDeclaration declaration) {
@@ -261,7 +277,7 @@ public final class JdtAnalyzer {
                 return true;
             }
         });
-        return result;
+        return new ArrayList<MethodNode>(result);
     }
 
     /**
@@ -273,7 +289,7 @@ public final class JdtAnalyzer {
      */
     private List<MethodNode> findRelatedMethods(MethodNode method, TraceDirection direction) {
         if (direction == TraceDirection.DOWN) {
-            return findProjectMethodInvocations(method);
+            return findProjectMethodInvocations(method, overrideIndex());
         }
         List<MethodNode> callers = callersByCalleeKey.get(method.getUniqueKey());
         return callers == null ? List.of() : callers;
@@ -284,10 +300,8 @@ public final class JdtAnalyzer {
      */
     private void buildCallerIndex() {
         callersByCalleeKey = new HashMap<String, List<MethodNode>>();
-        Map<String, List<MethodNode>> implementationsByDeclarationKey = buildOverrideIndex();
         for (MethodNode caller : sourceIndex.getMethods()) {
-            for (MethodNode callee : findProjectMethodInvocations(
-                    caller, implementationsByDeclarationKey)) {
+            for (MethodNode callee : findProjectMethodInvocations(caller, overrideIndex())) {
                 addCaller(callee, caller);
             }
         }
@@ -299,6 +313,18 @@ public final class JdtAnalyzer {
             callers.sort(callerOrder);
         }
         callerIndexBuilt = true;
+    }
+
+    /**
+     * 取得（必要時建立）介面或父類別 Method 到專案內覆寫實作的索引。
+     *
+     * @return 宣告與覆寫 Method 的對照表
+     */
+    private Map<String, List<MethodNode>> overrideIndex() {
+        if (implementationsByDeclarationKey == null) {
+            implementationsByDeclarationKey = buildOverrideIndex();
+        }
+        return implementationsByDeclarationKey;
     }
 
     /**
@@ -435,7 +461,17 @@ public final class JdtAnalyzer {
     private Map<Path, String> readSources(List<Path> javaFiles) throws IOException {
         Map<Path, String> result = new HashMap<Path, String>();
         for (Path javaFile : javaFiles) {
-            String source = Files.readString(javaFile, sourceCharset);
+            byte[] bytes = Files.readAllBytes(javaFile);
+            String source;
+            try {
+                source = sourceCharset.newDecoder().decode(ByteBuffer.wrap(bytes)).toString();
+            } catch (CharacterCodingException exception) {
+                // 舊專案常混用 MS950 與 UTF-8；只影響註解或字串時仍可分析，不讓單一檔案中止整個流程。
+                System.err.println("Warning: 檔案不是 " + sourceCharset.name()
+                        + " 編碼，無法辨識的字元已用替代字元顯示："
+                        + projectPath.relativize(javaFile));
+                source = new String(bytes, sourceCharset);
+            }
             if (!source.isEmpty() && source.charAt(0) == '\uFEFF') {
                 source = source.substring(1);
             }
@@ -592,17 +628,59 @@ public final class JdtAnalyzer {
     }
 
     /**
+     * 一次批次解析所有 Java 檔，讓所有檔案共用同一份型別資訊，大型專案才不會逐檔重複解析而耗盡記憶體。
+     *
+     * @param javaFiles Java 檔案
+     * @return 檔案與 CompilationUnit 對照表；批次失敗時回傳空表，改由逐檔解析
+     */
+    private Map<Path, CompilationUnit> parseAll(List<Path> javaFiles) {
+        Map<Path, CompilationUnit> result = new HashMap<Path, CompilationUnit>();
+        Map<String, Path> fileByName = new HashMap<String, Path>();
+        for (Path javaFile : javaFiles) {
+            fileByName.put(javaFile.toString(), javaFile);
+        }
+        try {
+            createParser().createASTs(
+                    fileByName.keySet().toArray(new String[0]),
+                    fileByName.keySet().stream().map(name -> sourceCharset.name()).toArray(String[]::new),
+                    new String[0],
+                    new FileASTRequestor() {
+                        @Override
+                        public void acceptAST(String sourceFilePath, CompilationUnit ast) {
+                            result.put(fileByName.get(sourceFilePath), ast);
+                        }
+                    },
+                    null);
+        } catch (RuntimeException exception) {
+            System.err.println("Warning: JDT 批次解析失敗，改為逐檔解析：" + exception.getMessage());
+            result.clear();
+        }
+        return result;
+    }
+
+    /**
      * 使用 JDT ASTParser 解析單一 Java 原始檔。
      *
      * @param javaFile Java 檔案
      * @param source 原始碼
      * @return CompilationUnit
      */
-    @SuppressWarnings("unchecked")
     private CompilationUnit parse(Path javaFile, String source) {
+        ASTParser parser = createParser();
+        parser.setSource(source.toCharArray());
+        parser.setUnitName(buildUnitName(javaFile));
+
+        return (CompilationUnit) parser.createAST(null);
+    }
+
+    /**
+     * 建立已設定 Java 11、Binding 與 Source Root 的 JDT ASTParser。
+     *
+     * @return ASTParser
+     */
+    private ASTParser createParser() {
         ASTParser parser = ASTParser.newParser(AST.JLS11);
         parser.setKind(ASTParser.K_COMPILATION_UNIT);
-        parser.setSource(source.toCharArray());
         parser.setResolveBindings(true);
         parser.setBindingsRecovery(true);
         parser.setStatementsRecovery(true);
@@ -612,9 +690,7 @@ public final class JdtAnalyzer {
                 sourceRoots.stream().map(Path::toString).toArray(String[]::new),
                 sourceRoots.stream().map(path -> sourceCharset.name()).toArray(String[]::new),
                 true);
-        parser.setUnitName(buildUnitName(javaFile));
-
-        return (CompilationUnit) parser.createAST(null);
+        return parser;
     }
 
     /**
